@@ -5,6 +5,7 @@
 #include "sla_test_utils.hpp"
 
 #include <libslic3r/SLA/SupportTreeMesher.hpp>
+#include <libslic3r/SLA/SpatIndex.hpp>
 
 namespace {
 
@@ -231,11 +232,132 @@ TEST_CASE("Triangle mesh conversions should be correct", "[SLAConversions]")
     }
 }
 
-TEST_CASE("halfcone test", "[halfcone]") {
-    sla::DiffBridge br{Vec3d{1., 1., 1.}, Vec3d{10., 10., 10.}, 0.25, 0.5};
+sla::SupportPoints calc_support_pts(
+    const TriangleMesh &                      mesh,
+    const sla::SupportPointGenerator::Config &cfg = {})
+{
+    // Prepare the slice grid and the slices
+    std::vector<ExPolygons> slices;
+    auto                    bb      = cast<float>(mesh.bounding_box());
+    std::vector<float>      heights = grid(bb.min.z(), bb.max.z(), 0.1f);
+    slice_mesh(mesh, heights, slices, CLOSING_RADIUS, [] {});
 
-    TriangleMesh m = sla::to_triangle_mesh(sla::get_mesh(br, 45));
+    // Prepare the support point calculator
+    sla::EigenMesh3D emesh{mesh};
+    sla::SupportPointGenerator spgen{emesh, cfg, []{}, [](int){}};
 
-    m.require_shared_vertices();
-    m.WriteOBJFile("Halfcone.obj");
+    // Calculate the support points
+    spgen.seed(0);
+    spgen.execute(slices, heights);
+
+    return spgen.output();
+}
+
+// Make a 3D pyramid
+TriangleMesh make_pyramid(float base, float height)
+{
+    float a = base / 2.f;
+
+    TriangleMesh mesh(
+        {
+            {-a, -a, 0}, {a, -a, 0}, {a, a, 0},
+            {-a, a, 0}, {0.f, 0.f, height}
+        },
+        {
+            {0, 1, 2},
+            {0, 2, 3},
+            {0, 1, 4},
+            {1, 2, 4},
+            {2, 3, 4},
+            {3, 0, 4}
+        });
+
+    mesh.repair();
+
+    return mesh;
+}
+
+TriangleMesh make_prism(double width, double length, double height)
+{
+    // We need two upward facing triangles
+
+    double x = width / 2., y = length / 2.;
+
+    TriangleMesh mesh(
+        {
+            {-x, -y, 0.},
+            {x, -y, 0.},
+            {0., -y, height},
+            {-x, y, 0.},
+            {x, y, 0.},
+            {0., y, height},
+        },
+        {
+            {0, 1, 2},
+            {4, 3, 5},
+            {1, 4, 2},
+            {2, 4, 5},
+            {0, 2, 5}
+        });
+}
+
+TEST_CASE("Reverse pyramid has supported overhanging point", "[SupGen]") {
+
+    // Pyramid with 45 deg slope
+    TriangleMesh mesh = make_pyramid(10.f, 10.f);
+    mesh.rotate_y(PI);
+    mesh.require_shared_vertices();
+    mesh.WriteOBJFile("Pyramid.obj");
+
+    sla::SupportPoints pts = calc_support_pts(mesh);
+
+    // The overhang, which is the upside-down pyramid's edge
+    Vec3f overh{0., 0., -10.};
+
+    REQUIRE(!pts.empty());
+
+    float dist = (overh - pts.front().pos).norm();
+
+    for (const auto &pt : pts)
+        dist = std::min(dist, (overh - pt.pos).norm());
+
+    // Should require exactly one support point at the overhang
+    REQUIRE(pts.size() > 0);
+    REQUIRE(dist < 1.f);
+}
+
+double min_point_distance(const sla::SupportPoints &pts)
+{
+    sla::PointIndex index;
+
+    for (size_t i = 0; i < pts.size(); ++i)
+        index.insert(pts[i].pos.cast<double>(), i);
+
+    auto d = std::numeric_limits<double>::max();
+    index.foreach([&d, &index](const sla::PointIndexEl &el) {
+        auto res = index.nearest(el.first, 2);
+        for (const sla::PointIndexEl &r : res)
+            if (r.second != el.second)
+                d = std::min(d, (el.first - r.first).norm());
+    });
+
+    return d;
+}
+
+TEST_CASE("Bottom of cuboid should be supported evenly", "[SupGen]") {
+    double width = 10., depth = 10., height = 1.;
+
+    TriangleMesh mesh = make_cube(width, depth, height);
+    mesh.translate(0., 0., 5.); // lift up
+    mesh.require_shared_vertices();
+    mesh.WriteOBJFile("Cuboid.obj");
+
+    sla::SupportPointGenerator::Config cfg;
+    sla::SupportPoints pts = calc_support_pts(mesh, cfg);
+
+    double mm2 = width * depth;
+
+    REQUIRE(!pts.empty());
+    REQUIRE(pts.size() * cfg.support_force() > mm2 * cfg.tear_pressure());
+    REQUIRE(min_point_distance(pts) >= cfg.minimal_distance);
 }
