@@ -410,7 +410,7 @@ Vec3d GLGizmoRotate::mouse_position_in_local_plane(const Linef3& mouse_ray, cons
 
     m.translate(-m_center);
 
-    return line::transform(mouse_ray, m).intersect_plane(0.0);
+    return transform(mouse_ray, m).intersect_plane(0.0);
 }
 
 GLGizmoRotate3D::GLGizmoRotate3D(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id)

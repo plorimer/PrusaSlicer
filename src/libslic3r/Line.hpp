@@ -22,6 +22,10 @@ public:
     using ValT = T;
     using VecT = Vec<N, T>;
 
+    // IsLine_ will be defined as std::true_type if this definition is present
+    // wich is true for all subclasses.
+    using LineCompatible = void;
+
     VecT a, b;
 
     VecPair() : a{VecT::Zero()}, b{VecT::Zero()} {}
@@ -34,6 +38,8 @@ public:
     static const constexpr size_t Dim = 2;
     using ValT = coord_t;
     using VecT = Point;
+
+    using LineCompatible = void;
 
     Point a, b;
     VecPair() = default;
@@ -69,10 +75,8 @@ template<class L> using LineValT = typename LineTraits<L>::ValT;
 template<class L> using LineVecT = typename LineTraits<L>::VecT;
 
 // Predicate telling if a class implements the Line concept
-template<class L, class Enable = void> struct IsLine_ {
-    // By default, something is a Line if its a subclass of the VecPair template
-    static const constexpr bool value = std::is_base_of_v<VecPair<LineDim<L>, LineValT<L>>, L>;
-};
+template<class L, class Enable = void> struct IsLine_: public std::false_type {};
+template<class L> struct IsLine_<L, typename L::LineCompatible>: public std::true_type {};
 
 // Short form for IsLine_<L>::value
 template<class L> static const constexpr bool IsLine = IsLine_<rm_cvref_t<L>>::value;
@@ -175,6 +179,8 @@ template<class L> LineDimOnly<L, 3, Vec3d> intersect_plane(const L &line, double
 
 } // namespace line
 
+using line::transform;
+
 template<size_t N, class T> class Line_: public VecPair<N, T> {
 public:
     using VecPair<N, T>::VecPair;
@@ -252,7 +258,7 @@ namespace boost { namespace polygon {
     struct segment_traits<Slic3r::Line> {
         typedef coord_t coordinate_type;
         typedef Slic3r::Point point_type;
-    
+
         static inline point_type get(const Slic3r::Line& line, direction_1d dir) {
             return dir.to_int() ? line.b : line.a;
         }
