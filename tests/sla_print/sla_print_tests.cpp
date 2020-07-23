@@ -285,23 +285,21 @@ TriangleMesh make_prism(double width, double length, double height)
 
     TriangleMesh mesh(
         {
-            {-x, -y, 0.},
-            {x, -y, 0.},
-            {0., -y, height},
-            {-x, y, 0.},
-            {x, y, 0.},
-            {0., y, height},
-        },
+            {-x, -y, 0.}, {x, -y, 0.}, {0., -y, height},
+            {-x, y, 0.}, {x, y, 0.}, {0., y, height},
+            },
         {
-            {0, 1, 2},
-            {4, 3, 5},
-            {1, 4, 2},
-            {2, 4, 5},
-            {0, 2, 5}
+            {0, 1, 2}, // side 1
+            {4, 3, 5}, // side 2
+            {1, 4, 2}, {2, 4, 5}, // roof 1
+            {0, 2, 5}, {0, 5, 3}, // roof 2
+            {3, 4, 1}, {3, 1, 0} // bottom
         });
+
+    return mesh;
 }
 
-TEST_CASE("Reverse pyramid has supported overhanging point", "[SupGen]") {
+TEST_CASE("Overhanging point should be supported", "[SupGen]") {
 
     // Pyramid with 45 deg slope
     TriangleMesh mesh = make_pyramid(10.f, 10.f);
@@ -344,7 +342,7 @@ double min_point_distance(const sla::SupportPoints &pts)
     return d;
 }
 
-TEST_CASE("Bottom of cuboid should be supported evenly", "[SupGen]") {
+TEST_CASE("Overhanging horizontal surface should be supported", "[SupGen]") {
     double width = 10., depth = 10., height = 1.;
 
     TriangleMesh mesh = make_cube(width, depth, height);
@@ -360,4 +358,21 @@ TEST_CASE("Bottom of cuboid should be supported evenly", "[SupGen]") {
     REQUIRE(!pts.empty());
     REQUIRE(pts.size() * cfg.support_force() > mm2 * cfg.tear_pressure());
     REQUIRE(min_point_distance(pts) >= cfg.minimal_distance);
+}
+
+TEST_CASE("Overhanging edge should be supported", "[SupGen]") {
+    double width = 10., depth = 10., height = 5.;
+
+    TriangleMesh mesh = make_prism(width, depth, height);
+    mesh.rotate_y(PI); // rotate on its back
+    mesh.translate(0., 0., height);
+    mesh.require_shared_vertices();
+    mesh.WriteOBJFile("Prism.obj");
+
+    sla::SupportPointGenerator::Config cfg;
+    sla::SupportPoints pts = calc_support_pts(mesh, cfg);
+
+    REQUIRE(min_point_distance(pts) >= cfg.minimal_distance);
+
+    //    Line3 overh{ {0., -depth / 2., 0.}, {0., depth / 2., 0.}};
 }
