@@ -361,7 +361,7 @@ TEST_CASE("Overhanging horizontal surface should be supported", "[SupGen]") {
 }
 
 TEST_CASE("Overhanging edge should be supported", "[SupGen]") {
-    double width = 10., depth = 10., height = 5.;
+    float width = 10.f, depth = 10.f, height = 5.f;
 
     TriangleMesh mesh = make_prism(width, depth, height);
     mesh.rotate_y(PI); // rotate on its back
@@ -374,5 +374,16 @@ TEST_CASE("Overhanging edge should be supported", "[SupGen]") {
 
     REQUIRE(min_point_distance(pts) >= cfg.minimal_distance);
 
-    //    Line3 overh{ {0., -depth / 2., 0.}, {0., depth / 2., 0.}};
+    Line_<3, float> overh{ {0.f, -depth / 2.f, 0.f}, {0.f, depth / 2.f, 0.f}};
+
+    // Get all the points closer that 1 mm to the overhanging edge:
+    sla::SupportPoints overh_pts; overh_pts.reserve(pts.size());
+
+    std::copy_if(pts.begin(), pts.end(), std::back_inserter(overh_pts),
+                 [&overh](const sla::SupportPoint &pt){
+                     return line::distance_to(overh, pt.pos) < 1.;
+                 });
+
+    REQUIRE(overh_pts.size() * cfg.support_force() > overh.length() * cfg.tear_pressure());
+    REQUIRE(min_point_distance(pts) >= cfg.minimal_distance);
 }
