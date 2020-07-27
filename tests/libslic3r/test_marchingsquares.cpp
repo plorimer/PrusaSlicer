@@ -20,11 +20,6 @@
 
 using namespace Slic3r;
 
-static double area(const sla::RasterBase::PixelDim &pxd)
-{
-    return pxd.w_mm * pxd.h_mm;
-}
-
 static Slic3r::sla::RasterGrayscaleAA create_raster(
     const sla::RasterBase::Resolution &res,
     double                             disp_w = 100.,

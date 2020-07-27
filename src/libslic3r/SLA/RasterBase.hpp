@@ -67,6 +67,8 @@ public:
         TMirroring get_mirror() const { return { (roPortrait ? !mirror_x : mirror_x), mirror_y}; }
         Orientation get_orientation() const { return flipXY ? roPortrait : roLandscape; }
         Point get_center() const { return {center_x, center_y}; }
+        Trafo &set_center(coord_t x, coord_t y) { center_x = x; center_y = y; return *this; }
+        Trafo &set_center(const Point &p) { return set_center(p.x(), p.y()); }
     };
     
     /// Type that represents a resolution in pixels.
@@ -76,6 +78,10 @@ public:
         
         Resolution(size_t w = 0, size_t h = 0) : width_px(w), height_px(h) {}
         size_t pixels() const { return width_px * height_px; }
+        bool   operator==(const Resolution &o)
+        {
+            return width_px == o.width_px && height_px == o.height_px;
+        }
     };
     
     /// Types that represents the dimension of a pixel in millimeters.
@@ -118,6 +124,11 @@ uqptr<RasterBase> create_raster_grayscale_aa(
     const RasterBase::PixelDim &  pxdim,
     double                        gamma = 1.0,
     const RasterBase::Trafo &     tr    = {});
+
+static double area(const sla::RasterBase::PixelDim &pxd)
+{
+    return pxd.w_mm * pxd.h_mm;
+}
 
 }} // namespace Slic3r::sla
 

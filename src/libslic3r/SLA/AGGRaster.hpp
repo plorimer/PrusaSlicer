@@ -33,8 +33,11 @@ template<class Color> struct Colors {
     static const Color Black;
 };
 
-template<class Color> const Color Colors<Color>::White = Color{255};
-template<class Color> const Color Colors<Color>::Black = Color{0};
+template<class Color> const Color Colors<Color>::White =
+    Color{std::numeric_limits<typename Color::value_type>::max()};
+
+template<class Color> const Color Colors<Color>::Black =
+    Color{std::numeric_limits<typename Color::value_type>::min()};
 
 template<class PixelRenderer,
          template<class /*agg::renderer_base<PixelRenderer>*/> class Renderer,
@@ -52,8 +55,8 @@ protected:
     Resolution m_resolution;
     PixelDim m_pxdim_scaled;    // used for scaled coordinate polygons
     
-    std::vector<TPixel> m_buf;
-    agg::rendering_buffer m_rbuf;
+    std::vector<TValue> m_buf;
+    typename PixelRenderer::rbuf_type m_rbuf;
     
     PixelRenderer m_pixrenderer;
     
@@ -137,10 +140,10 @@ public:
         : m_resolution(res)
         , m_pxdim_scaled(SCALING_FACTOR / pd.w_mm, SCALING_FACTOR / pd.h_mm)
         , m_buf(res.pixels())
-        , m_rbuf(reinterpret_cast<TValue *>(m_buf.data()),
+        , m_rbuf(static_cast<TValue *>(m_buf.data()),
                  unsigned(res.width_px),
                  unsigned(res.height_px),
-                 int(res.width_px *PixelRenderer::num_components))
+                 int(res.width_px * PixelRenderer::num_components))
         , m_pixrenderer(m_rbuf)
         , m_raw_renderer(m_pixrenderer)
         , m_renderer(m_raw_renderer)
@@ -198,10 +201,8 @@ public:
     uint8_t read_pixel(size_t col, size_t row) const
     {
         static_assert(std::is_same<TValue, uint8_t>::value, "Not grayscale pix");
-        
-        uint8_t px;
-        Base::m_buf[row * Base::resolution().width_px + col].get(px);
-        return px;
+
+        return this->m_buf[row * Base::resolution().width_px + col];
     }
     
     void clear() { Base::clear(Colors<TColor>::Black); }
