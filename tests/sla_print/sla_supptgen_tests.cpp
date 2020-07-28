@@ -97,10 +97,48 @@ public:
 
 };
 
+class PressureRaster8 : public RasterGrayscaleAAGammaPower {
+public:
+
+    using RasterGrayscaleAAGammaPower::RasterGrayscaleAAGammaPower;
+
+    void swap(std::vector<uint8_t> &buf) { m_buf.swap(buf); }
+};
+
 double bb_width(const BoundingBoxf &bb) { return bb.max.x() - bb.min.x(); }
 double bb_height(const BoundingBoxf &bb) { return bb.max.y() - bb.min.y(); }
 
-using PressureMatrix = Eigen::MatrixXf;
+// Help cache coherency by having the same memory layout as the raster
+using PressureMatrix = Eigen::MatrixXf; //Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>; //Eigen::MatrixXf;
+
+EncodedRaster to_ppm(const PressureMatrix &pmat, float cmin, float cmax)
+{
+    std::vector<uint8_t> buf;
+
+    auto header = std::string("P5 ") +
+                  std::to_string(pmat.rows()) + " " +
+                  std::to_string(pmat.cols()) + " " + "255 ";
+
+    auto sz = size_t(pmat.cols() * pmat.rows());
+    size_t s = sz + header.size();
+
+    buf.reserve(s);
+
+    std::copy(header.begin(), header.end(), std::back_inserter(buf));
+
+    for (size_t r = 0; r < size_t(pmat.cols()); ++r)
+        for (size_t c = 0; c < size_t(pmat.rows()); ++c)
+            buf.emplace_back(
+                uint8_t(std::max(0., std::min(255., 255. * (pmat(c, r) - cmin) / (cmax - cmin) )))
+                );
+
+    return EncodedRaster(std::move(buf), "ppm");
+}
+
+EncodedRaster to_ppm(const PressureMatrix &pmat)
+{
+    return to_ppm(pmat, pmat.minCoeff(), pmat.maxCoeff());
+}
 
 class PressureModel {
     const std::vector<ExPolygons> &m_slices;
@@ -110,49 +148,54 @@ class PressureModel {
     RasterBase::PixelDim   m_pxdim;
     Point m_bedcenter = {0, 0};
 
-    float m_tear_foce = -2.f;
+    float m_tear_foce = 50.f;
+    float m_material_density = 1e-6f; // kg / mm3
+//    float m_material_stick   = 5.f;
+    float m_bed_stick        = 2500.f;
 
     void init_grid(PressureMatrix &rst) const
     {
         rst.setOnes();
-        rst *= 10.f; // TODO: substitue grip force of the print bed
+        rst *= m_bed_stick * area(m_pxdim); // TODO: substitue grip force of the print bed
     }
 
-    void calc_grid(size_t n, PressureMatrix &pmat) const
+    void calc_grid(size_t n, PressureMatrix &pmat, std::vector<uint8_t> &prev_rst) const
     {
-        RasterGrayscaleAAGammaPower rst(m_res, m_pxdim,
-                                        RasterBase::Trafo{}.set_center(m_bedcenter));
+        PressureRaster8 rst(m_res, m_pxdim,
+                            RasterBase::Trafo{}.set_center(m_bedcenter));
 
         for (auto &expoly : m_slices[n]) rst.draw(expoly);
 
-//        PressureMatrix pmat_prev(m_res.width_px, m_res.height_px);
-//        pmat_prev.setZero();
-//        if (n > 0) {
-//            RasterGrayscaleAAGammaPower rst_prev(m_res, m_pxdim,
-//                                            RasterBase::Trafo{}.set_center(m_bedcenter));
+        float h = n == 0 || m_heights.empty() ? 0. : m_heights[n] - m_heights[n - 1];
 
-//            for (auto &expoly : m_slices[n - 1]) rst_prev.draw(expoly);
+        float pxforce = area(m_pxdim) * m_tear_foce;
+        float weight = h * area(m_pxdim) * m_material_density;
+//        float stick  = area(m_pxdim) * m_material_stick;
 
-//            for (int r = 0; r < int(m_res.height_px); ++r) {
-//                for (int c = 0; c < int(m_res.width_px); ++c)
-//                    pmat_prev(c, r) = area(m_pxdim) * -m_tear_foce *
-//                                      rst_prev.read_pixel(c, r) / 255.;
-//            }
-//        }
+        for (int y = 0; y < int(m_res.height_px); ++y) {
+            for (int x = 0; x < int(m_res.width_px); ++x) {
+                float v = pmat(x, y);
+                float mask = rst.read_pixel(x, y) / 255.;
+                float prevmask = !std::signbit(v) * prev_rst[y * m_res.width_px + x] / 255.;
 
-        std::fstream{std::string("layer") + std::to_string(n) + ".png", std::fstream::out} << rst.encode(PNGRasterEncoder{});
+//                v += prevmask * mask * (0.8 * pxforce /*+ stick*/);
+//                v += std::max(0.f, prevmask - mask) * pxforce;
+                v += prevmask * pxforce;
 
-//        float h = n == 0 || m_heights.empty() ? 0. : m_heights[n] - m_heights[n - 1];
+                pmat(x, y) = v = mask * (v - pxforce - weight);
 
-        for (int r = 0; r < int(m_res.height_px); ++r) {
-            for (int c = 0; c < int(m_res.width_px); ++c) {
-                float mask = rst.read_pixel(c, r) / 255.;
-                pmat(c, r) = mask * pmat(c, r)  /*+ pmat_prev(c, r)*/ + area(m_pxdim) * m_tear_foce * mask;
+                m_minval = std::min(m_minval, v);
+                m_maxval = std::max(m_maxval, v);
             }
         }
+
+        rst.swap(prev_rst);
     }
 
 public:
+
+    mutable float m_minval = std::numeric_limits<float>::max();
+    mutable float m_maxval = std::numeric_limits<float>::lowest();
 
     PressureModel(const std::vector<ExPolygons> &slices,
                   const std::vector<float> &     heights,
@@ -164,19 +207,27 @@ public:
         , m_pxdim{bb_width(bed) / gridsize.x(), bb_height(bed) / gridsize.y()}
         , m_bedcenter{scaled(bed.center())} {};
 
-    PressureMatrix operator() (size_t n) const;
+    std::vector<PressureMatrix> operator() (size_t n) const;
 };
 
-PressureMatrix PressureModel::operator() (size_t n) const
+std::vector<PressureMatrix> PressureModel::operator() (size_t n) const
 {
+    std::vector<PressureMatrix> ret; ret.reserve(n);
+
     PressureMatrix grid{m_res.width_px, m_res.height_px};
+    std::vector<uint8_t> prev_rst(m_res.pixels(), 0);
 
     init_grid(grid);
 
-    for (size_t i = 0; i < n && i < m_slices.size(); ++i)
-        calc_grid(i, grid);
+    for (size_t i = 0; i < n && i < m_slices.size(); ++i) {
+        calc_grid(i, grid, prev_rst);
+        ret.emplace_back(grid);
+    }
 
-    return grid;
+//    m_minval = -2 * area(m_pxdim) * m_tear_foce;
+//    m_maxval = 0.; // m_bed_stick * area(m_pxdim);
+
+    return ret;
 }
 
 //static ExPolygon square(double a, Point center = {0, 0})
@@ -203,51 +254,38 @@ PressureMatrix PressureModel::operator() (size_t n) const
 //    std::fstream{"floatrast.ppm", std::fstream::out} << rst.encode(PPMRasterEncoder{});
 //}
 
-EncodedRaster to_ppm(const PressureMatrix &pmat)
-{
-    std::vector<uint8_t> buf;
 
-    auto header = std::string("P5 ") +
-                  std::to_string(pmat.rows()) + " " +
-                  std::to_string(pmat.cols()) + " " + "255 ";
-
-    auto sz = size_t(pmat.cols() * pmat.rows());
-    size_t s = sz + header.size();
-
-    buf.reserve(s);
-
-    std::copy(header.begin(), header.end(), std::back_inserter(buf));
-
-    float cmax = pmat.maxCoeff();
-    float cmin = pmat.minCoeff();
-    for (size_t c = 0; c < size_t(pmat.cols()); ++c)
-        for (size_t r = 0; r < size_t(pmat.rows()); ++r)
-            buf.emplace_back(
-                uint8_t(std::max(0., std::min(255., 255. * (pmat(r, c) - cmin) / (cmax - cmin) )))
-                );
-
-    return EncodedRaster(std::move(buf), "ppm");
-}
 
 TEST_CASE("PressureMatrix calc", "[SupGen]")
 {
 
-    TriangleMesh mesh = make_pyramid(50., 5.);
+    TriangleMesh mesh = make_pyramid(50., 50.);
 //    mesh.rotate_y(PI);
-    mesh.translate(0.f, 0.f, 1.f);
-    mesh.require_shared_vertices();
+//    mesh.translate(0.f, 0.f, 5.f);
+
+
+//    TriangleMesh mesh = make_cube(25., 25., 25.);
+//    mesh.rotate_x(PI/4);
+////    mesh.rotate_y(PI/4);
+////    mesh.rotate_z(PI/4);
+//    mesh.translate(-mesh.bounding_box().center().cast<float>());
+//    mesh.require_shared_vertices();
+//    mesh.WriteOBJFile("rotcube.obj");
 
     // Prepare the slice grid and the slices
     std::vector<ExPolygons> slices;
     auto                    bb      = cast<float>(mesh.bounding_box());
-    std::vector<float>      heights = grid(bb.min.z() + 0.1f - 1.f, bb.max.z(), 0.1f);
+    std::vector<float>      heights = grid(bb.min.z() + 0.1f + 2.f, bb.max.z(), 0.1f);
     slice_mesh(mesh, heights, slices, CLOSING_RADIUS, [] {});
 
-    PressureModel pm{slices, heights, BoundingBoxf{{0., 0.}, {120.f, 68.f}}, {120, 68}};
+    PressureModel pm{slices, heights, BoundingBoxf{{0., 0.}, {120.f, 68.f}}, {1200, 680}};
 
-    PressureMatrix pmat = pm(13/*slices.size()*/);
+    std::vector<PressureMatrix> pmats = pm(slices.size());
 
-    std::fstream{"floatrast.ppm", std::fstream::out} << to_ppm(pmat);
+    size_t n = 0;
+    for (const PressureMatrix &pmat : pmats) {
+        std::fstream{std::string("pmat") + std::to_string(n++) + ".ppm", std::fstream::out} << to_ppm(pmat, pm.m_minval, pm.m_maxval);
+    }
 }
 
 }} // namespace Slic3r::sla
