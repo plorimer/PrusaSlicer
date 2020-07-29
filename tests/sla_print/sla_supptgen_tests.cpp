@@ -97,6 +97,36 @@ public:
 
 };
 
+struct SizeV
+{
+    size_t rows = 0, cols = 0;
+    size_t count() const { return rows * cols; }
+};
+
+template<class T, class Fn>
+void apply_operator(std::vector<T> &buf,
+                    const SizeV &   bufsz,
+                    const SizeV &   win,
+                    Fn &&           fn)
+{
+    std::vector<T> cell(win.count(), T{});
+    std::vector<T> cpy(bufsz.count(), T{});
+
+    for (size_t r = win.rows; r < bufsz.rows - win.rows; ++r)
+        for (size_t c = win.cols; c < bufsz.cols - win.cols; ++c) {
+            int nr = win.rows, nc = win.cols;
+
+            for (int ri = -nr; ri < nr; ++ri)
+                for (int ci = -nc; ci < nc; ++ci)
+                    cell[ri * win.cols + ci] =
+                        buf[size_t(r + ri) * bufsz.cols + size_t(c + ci)];
+
+            cpy[r * bufsz.cols + c] = fn(c, r, cell);
+        }
+
+    buf = std::move(cpy);
+}
+
 class PressureRaster8 : public RasterGrayscaleAAGammaPower {
     inline uint8_t &get(size_t c, size_t r)
     {
@@ -109,16 +139,15 @@ public:
 
     void swap(std::vector<uint8_t> &buf) { m_buf.swap(buf); }
 
-    void blur(double /*dist*/)
+    void distribute(double /*dist*/)
     {
-        for (size_t r = 1; r < m_resolution.height_px - 1; ++r)
-            for (size_t c = 1; c < m_resolution.width_px - 1; ++c) {
-                auto v =
-                    (double(get(c - 1, r + 1)) + get(c, r + 1) + get(c + 1, r + 1) +
-                     get(c - 1, r) + get(c, r) + get(c + 1, r) +
-                     get(c - 1, r - 1) + get(c, r - 1) + get(c + 1, r - 1)) / 9.;
-                get(c, r) = uint8_t(std::round(v));
-            }
+        apply_operator(m_buf, {m_resolution.height_px, m_resolution.width_px},
+                       {2, 2},
+                       [](size_t, size_t, const std::vector<uint8_t> &cell)
+        {
+            auto it = std::max_element(cell.begin(), cell.end());
+            return it == cell.end() ? 0 : *it;
+        });
     }
 };
 
@@ -167,7 +196,7 @@ class PressureModel {
 
     float m_tear_foce = 1e-2f; // g / mm3
     float m_material_density = 1e-3f; // g / mm3
-    float m_bed_stick        = 150.f * m_material_density + 2 * m_tear_foce;
+    float m_bed_stick        = 1000. * (150.f * m_material_density + 2. * m_tear_foce);
 
     void init_grid(PressureMatrix &rst) const
     {
@@ -181,7 +210,7 @@ class PressureModel {
                             RasterBase::Trafo{}.set_center(m_bedcenter));
 
         for (auto &expoly : m_slices[n]) rst.draw(expoly);
-        rst.blur(0.);
+        rst.distribute(0.);
 
         float h = n == 0 || m_heights.empty() ? 0. : m_heights[n] - m_heights[n - 1];
 
@@ -236,7 +265,7 @@ std::vector<PressureMatrix> PressureModel::operator() (size_t n) const
         ret.emplace_back(grid);
     }
 
-    m_minval = -(n/2 * area(m_pxdim) * m_tear_foce);
+    m_minval = -(n * area(m_pxdim) * m_tear_foce);
     m_maxval = 0.; // m_bed_stick * area(m_pxdim);
 
     return ret;
@@ -246,7 +275,7 @@ std::vector<PressureMatrix> PressureModel::operator() (size_t n) const
 TEST_CASE("PressureMatrix calc", "[SupGen]")
 {
 
-    TriangleMesh mesh = make_pyramid(20., 8.);
+    TriangleMesh mesh = make_pyramid(20., 11.);
     mesh.rotate_y(PI);
     mesh.translate(0.f, 0.f, 5.f);
 
@@ -262,10 +291,10 @@ TEST_CASE("PressureMatrix calc", "[SupGen]")
     // Prepare the slice grid and the slices
     std::vector<ExPolygons> slices;
     auto                    bb      = cast<float>(mesh.bounding_box());
-    std::vector<float>      heights = grid(bb.min.z() - 0.1f, bb.max.z(), 0.1f);
+    std::vector<float>      heights = grid(bb.min.z() + 2.f, bb.max.z(), 0.1f);
     slice_mesh(mesh, heights, slices, CLOSING_RADIUS, [] {});
 
-    PressureModel pm{slices, heights, BoundingBoxf{{0., 0.}, {120.f, 68.f}}, {1200, 680}};
+    PressureModel pm{slices, heights, BoundingBoxf{{0., 0.}, {120.f, 68.f}}, {120, 68}};
 
     std::vector<PressureMatrix> pmats = pm(slices.size());
 
