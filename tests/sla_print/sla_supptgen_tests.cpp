@@ -98,18 +98,35 @@ public:
 };
 
 class PressureRaster8 : public RasterGrayscaleAAGammaPower {
+    inline uint8_t &get(size_t c, size_t r)
+    {
+        return m_buf[r * m_resolution.width_px + c];
+    }
+
 public:
 
     using RasterGrayscaleAAGammaPower::RasterGrayscaleAAGammaPower;
 
     void swap(std::vector<uint8_t> &buf) { m_buf.swap(buf); }
+
+    void blur(double /*dist*/)
+    {
+        for (size_t r = 1; r < m_resolution.height_px - 1; ++r)
+            for (size_t c = 1; c < m_resolution.width_px - 1; ++c) {
+                auto v =
+                    (double(get(c - 1, r + 1)) + get(c, r + 1) + get(c + 1, r + 1) +
+                     get(c - 1, r) + get(c, r) + get(c + 1, r) +
+                     get(c - 1, r - 1) + get(c, r - 1) + get(c + 1, r - 1)) / 9.;
+                get(c, r) = uint8_t(std::round(v));
+            }
+    }
 };
 
 double bb_width(const BoundingBoxf &bb) { return bb.max.x() - bb.min.x(); }
 double bb_height(const BoundingBoxf &bb) { return bb.max.y() - bb.min.y(); }
 
 // Help cache coherency by having the same memory layout as the raster
-using PressureMatrix = Eigen::MatrixXf; //Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>; //Eigen::MatrixXf;
+using PressureMatrix = Eigen::MatrixXf;
 
 EncodedRaster to_ppm(const PressureMatrix &pmat, float cmin, float cmax)
 {
@@ -148,10 +165,9 @@ class PressureModel {
     RasterBase::PixelDim   m_pxdim;
     Point m_bedcenter = {0, 0};
 
-    float m_tear_foce = 50.f;
-    float m_material_density = 1e-6f; // kg / mm3
-//    float m_material_stick   = 5.f;
-    float m_bed_stick        = 2500.f;
+    float m_tear_foce = 1e-2f; // g / mm3
+    float m_material_density = 1e-3f; // g / mm3
+    float m_bed_stick        = 150.f * m_material_density + 2 * m_tear_foce;
 
     void init_grid(PressureMatrix &rst) const
     {
@@ -165,12 +181,12 @@ class PressureModel {
                             RasterBase::Trafo{}.set_center(m_bedcenter));
 
         for (auto &expoly : m_slices[n]) rst.draw(expoly);
+        rst.blur(0.);
 
         float h = n == 0 || m_heights.empty() ? 0. : m_heights[n] - m_heights[n - 1];
 
         float pxforce = area(m_pxdim) * m_tear_foce;
         float weight = h * area(m_pxdim) * m_material_density;
-//        float stick  = area(m_pxdim) * m_material_stick;
 
         for (int y = 0; y < int(m_res.height_px); ++y) {
             for (int x = 0; x < int(m_res.width_px); ++x) {
@@ -178,14 +194,10 @@ class PressureModel {
                 float mask = rst.read_pixel(x, y) / 255.;
                 float prevmask = !std::signbit(v) * prev_rst[y * m_res.width_px + x] / 255.;
 
-//                v += prevmask * mask * (0.8 * pxforce /*+ stick*/);
-//                v += std::max(0.f, prevmask - mask) * pxforce;
-                v += prevmask * pxforce;
+                pmat(x, y) = v = mask * (v - pxforce - weight) + prevmask * pxforce;
 
-                pmat(x, y) = v = mask * (v - pxforce - weight);
-
-                m_minval = std::min(m_minval, v);
-                m_maxval = std::max(m_maxval, v);
+//                m_minval = std::min(m_minval, v);
+//                m_maxval = std::max(m_maxval, v);
             }
         }
 
@@ -224,48 +236,23 @@ std::vector<PressureMatrix> PressureModel::operator() (size_t n) const
         ret.emplace_back(grid);
     }
 
-//    m_minval = -2 * area(m_pxdim) * m_tear_foce;
-//    m_maxval = 0.; // m_bed_stick * area(m_pxdim);
+    m_minval = -(n/2 * area(m_pxdim) * m_tear_foce);
+    m_maxval = 0.; // m_bed_stick * area(m_pxdim);
 
     return ret;
 }
-
-//static ExPolygon square(double a, Point center = {0, 0})
-//{
-//    ExPolygon poly;
-//    coord_t V = scaled(a / 2.);
-
-//    poly.contour.points = {{-V, -V}, {V, -V}, {V, V}, {-V, V}};
-//    poly.translate(center.x(), center.y());
-
-//    return poly;
-//}
-
-//TEST_CASE("Float rasterizer", "[SupGen]") {
-//    _RasterGrayscaleAA rst({500, 500}, {1., 1.},
-//                    RasterBase::Trafo{}.set_center(scaled(Vec2d(250., 250.))),
-//                    _RasterGrayscaleAA::TColor{255}, _RasterGrayscaleAA::TColor{0},
-//                    agg::gamma_power{1.});
-
-//    ExPolygon sqh = square_with_hole(50.);
-
-//    rst.draw(sqh);
-
-//    std::fstream{"floatrast.ppm", std::fstream::out} << rst.encode(PPMRasterEncoder{});
-//}
-
 
 
 TEST_CASE("PressureMatrix calc", "[SupGen]")
 {
 
-    TriangleMesh mesh = make_pyramid(50., 50.);
-//    mesh.rotate_y(PI);
-//    mesh.translate(0.f, 0.f, 5.f);
+    TriangleMesh mesh = make_pyramid(20., 8.);
+    mesh.rotate_y(PI);
+    mesh.translate(0.f, 0.f, 5.f);
 
 
-//    TriangleMesh mesh = make_cube(25., 25., 25.);
-//    mesh.rotate_x(PI/4);
+//    TriangleMesh mesh = make_cube(25., 25., 150.);
+////    mesh.rotate_x(PI/4);
 ////    mesh.rotate_y(PI/4);
 ////    mesh.rotate_z(PI/4);
 //    mesh.translate(-mesh.bounding_box().center().cast<float>());
@@ -275,7 +262,7 @@ TEST_CASE("PressureMatrix calc", "[SupGen]")
     // Prepare the slice grid and the slices
     std::vector<ExPolygons> slices;
     auto                    bb      = cast<float>(mesh.bounding_box());
-    std::vector<float>      heights = grid(bb.min.z() + 0.1f + 2.f, bb.max.z(), 0.1f);
+    std::vector<float>      heights = grid(bb.min.z() - 0.1f, bb.max.z(), 0.1f);
     slice_mesh(mesh, heights, slices, CLOSING_RADIUS, [] {});
 
     PressureModel pm{slices, heights, BoundingBoxf{{0., 0.}, {120.f, 68.f}}, {1200, 680}};
