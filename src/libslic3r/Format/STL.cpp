@@ -14,18 +14,26 @@
 
 namespace Slic3r {
 
-bool load_stl(const char *path, Model *model, const char *object_name_in)
+bool load_stl(const char *path, TriangleMesh *mesh)
 {
-    TriangleMesh mesh;
-    if (! mesh.ReadSTLFile(path)) {
+    if (! mesh->ReadSTLFile(path)) {
 //    die "Failed to open $file\n" if !-e $path;
         return false;
     }
-    mesh.repair();
-    if (mesh.facets_count() == 0) {
+    mesh->repair();
+    if (mesh->facets_count() == 0) {
         // die "This STL file couldn't be read because it's empty.\n"
         return false;
     }
+
+    return true;
+}
+
+bool load_stl(const char *path, Model *model, const char *object_name_in)
+{
+    TriangleMesh mesh;
+    if (! load_stl(path, &mesh))
+        return false;
 
     std::string object_name;
     if (object_name_in == nullptr) {
