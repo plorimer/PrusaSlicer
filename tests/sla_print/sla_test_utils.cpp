@@ -469,7 +469,7 @@ sla::SupportPoints calc_support_pts(
     slice_mesh(mesh, heights, slices, CLOSING_RADIUS, [] {});
 
     // Prepare the support point calculator
-    sla::EigenMesh3D emesh{mesh};
+    sla::IndexedMesh emesh{mesh};
     sla::SupportPointGenerator spgen{emesh, cfg, []{}, [](int){}};
 
     // Calculate the support points
