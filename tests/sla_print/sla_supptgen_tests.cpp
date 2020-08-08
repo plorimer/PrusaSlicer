@@ -372,6 +372,14 @@ TEST_CASE("Overhanging horizontal surface should be supported", "[SupGen]") {
     REQUIRE(min_point_distance(pts) >= cfg.minimal_distance);
 }
 
+template<class M> auto&& center_around_bb(M &&mesh)
+{
+    auto bb = mesh.bounding_box();
+    mesh.translate(-bb.center().template cast<float>());
+
+    return std::forward<M>(mesh);
+}
+
 TEST_CASE("Overhanging edge should be supported", "[SupGen]") {
     float width = 10.f, depth = 10.f, height = 5.f;
 
@@ -402,6 +410,30 @@ TEST_CASE("Overhanging edge should be supported", "[SupGen]") {
 
 TEST_CASE("Hollowed cube should be supported from the inside", "[SupGen][Hollowed]") {
     TriangleMesh mesh = load_model("cube_hollowed.obj");
+    auto bb = mesh.bounding_box();
+    auto h  = float(bb.max.z() - bb.min.z());
+    Vec3f mv = bb.center().cast<float>() - Vec3f{0.f, 0.f, 0.5f * h};
+    mesh.translate(-mv);
+    mesh.require_shared_vertices();
+
+    sla::SupportPointGenerator::Config cfg;
+    sla::SupportPoints pts = calc_support_pts(mesh, cfg);
+    sla::remove_bottom_points(pts, mesh.bounding_box().min.z() + EPSILON);
+
+    REQUIRE(!pts.empty());
+}
+
+TEST_CASE("Two parallel plates should be supported", "[SupGen][Hollowed]")
+{
+    double width = 20., depth = 20., height = 1.;
+
+    TriangleMesh mesh = center_around_bb(make_cube(width + 5., depth + 5., height));
+    TriangleMesh mesh_high = center_around_bb(make_cube(width, depth, height));
+    mesh_high.translate(0., 0., 10.); // lift up
+    mesh.merge(mesh_high);
+    mesh.require_shared_vertices();
+
+    mesh.WriteOBJFile("parallel_plates.obj");
 
     sla::SupportPointGenerator::Config cfg;
     sla::SupportPoints pts = calc_support_pts(mesh, cfg);
